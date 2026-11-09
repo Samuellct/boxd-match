@@ -90,6 +90,8 @@ class Library:
     list_roles: dict[str, frozenset[str]]
     unknown_configured_lists: list[str]
     deleted_rows: int
+    # Every diary/review viewing by entry URI, attached or not (pending ones too).
+    viewings: dict[str, Viewing] = field(default_factory=dict)
 
 
 def _key(name: str, year: str) -> tuple[str, str]:
@@ -146,7 +148,7 @@ def build_library(export: Export, config: Config) -> Library:
     viewing_by_entry: dict[str, Viewing] = {}
     diary_links: dict[str, EntryLink] = {}
 
-    def attach(source: str, row: Row) -> Viewing | None:
+    def attach(source: str, row: Row) -> Viewing:
         entry_uri = row["Letterboxd URI"].strip()
         found = candidates(row["Name"], row["Year"])
         film_uri = found[0] if len(found) == 1 else None
@@ -198,7 +200,7 @@ def build_library(export: Export, config: Config) -> Library:
                 )
             )
         else:
-            attach("reviews.csv", row)
+            viewing_by_entry[entry_uri] = attach("reviews.csv", row)
 
     orphans = [
         OrphanSuggestion(f"orphaned/{name}", row["Name"], row["Year"].strip(), candidates(row["Name"], row["Year"]))
@@ -216,6 +218,7 @@ def build_library(export: Export, config: Config) -> Library:
         list_roles={slug: config.roles_for(slug) for slug in slugs},
         unknown_configured_lists=sorted(set(config.list_roles) - slugs),
         deleted_rows=sum(len(rows) for rows in export.deleted.values()),
+        viewings=viewing_by_entry,
     )
 
 

@@ -7,7 +7,8 @@ import json
 import sys
 
 from boxd_match import __version__
-from boxd_match.config import ConfigError, load_config
+from boxd_match import db
+from boxd_match.config import Config, ConfigError, load_config
 from boxd_match.export import ExportError, read_export
 from boxd_match.films import build_library, summarize
 
@@ -24,7 +25,50 @@ def build_parser() -> argparse.ArgumentParser:
     summary.add_argument("export", help="export folder or ZIP file")
     summary.add_argument("--config", help="TOML file with list roles ([lists] section)")
     summary.add_argument("--json", action="store_true", help="print the summary as JSON")
+
+    imp = commands.add_parser("import", help="load an export into the database (no network)")
+    imp.add_argument("export", help="export folder or ZIP file")
+    _db_options(imp)
     return parser
+
+
+def _db_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--config", help="TOML file with list roles and [paths] database")
+    command.add_argument("--db", help="SQLite database path (overrides the config)")
+    command.add_argument("--json", action="store_true", help="print the result as JSON")
+
+
+def _open_db(args: argparse.Namespace, config: Config):
+    return db.connect(args.db or config.database)
+
+
+def _emit(args: argparse.Namespace, data: dict, lines: list[str]) -> None:
+    if args.json:
+        json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
+        print()
+    else:
+        print("\n".join(lines))
+
+
+def _cmd_import(args: argparse.Namespace, config: Config) -> int:
+    library = build_library(read_export(args.export), config)
+    conn = _open_db(args, config)
+    db.import_library(conn, library, str(args.export))
+    c = db.export_counts(conn)
+    _emit(args, c, [
+        f"films                        {c['films']}",
+        f"watched                      {c['watched']}",
+        f"watched and in watchlist.csv {c['watched_and_watchlist_csv']}",
+        f"to watch                     {c['to_watch']}",
+        f"diary attached               {c['diary_attached']}/{c['diary_rows']}",
+        f"reviews attached             {c['reviews_attached']}/{c['reviews_rows']}",
+        f"lists (entries)              {c['lists']} ({c['list_entries']})",
+        f"orphaned rows                {c['orphans']}",
+    ])
+    return 0
+
+
+_DB_COMMANDS = {"import": _cmd_import}
 
 
 def _print_text(s: dict) -> None:
@@ -68,21 +112,23 @@ def _print_text(s: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command != "summary":
+    if args.command is None:
         parser.print_help()
         return 0
-    try:
-        config = load_config(args.config)
-        summary = summarize(build_library(read_export(args.export), config))
-    except (ConfigError, ExportError) as error:
-        print(f"boxd-match: error: {error}", file=sys.stderr)
-        return 2
     # Titles are not ASCII-only; never crash on a narrow Windows console codepage.
     if hasattr(sys.stdout, "reconfigure"):
-        if args.json:
+        if getattr(args, "json", False):
             sys.stdout.reconfigure(encoding="utf-8")
         else:
             sys.stdout.reconfigure(errors="backslashreplace")
+    try:
+        config = load_config(args.config)
+        if args.command in _DB_COMMANDS:
+            return _DB_COMMANDS[args.command](args, config)
+        summary = summarize(build_library(read_export(args.export), config))
+    except (ConfigError, ExportError, db.SchemaError) as error:
+        print(f"boxd-match: error: {error}", file=sys.stderr)
+        return 2
     if args.json:
         json.dump(summary, sys.stdout, ensure_ascii=False, indent=2)
         print()
