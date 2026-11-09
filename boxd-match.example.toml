@@ -2,7 +2,27 @@
 #
 # [lists] maps a list file name (lists/<name>.csv, without .csv) to its roles.
 # "watchlist" adds the list to the watchlist: to watch = (watchlist.csv + these lists) - watched.
-# Other roles (e.g. "owned") are kept as labels for later stages.
+# "owned" marks a list of titles you own; `match` reports it separately.
 [lists]
 "watchlist-dispo-en-local" = ["watchlist"]
 "collection-perso" = ["owned"]
+
+# [paths]
+# database = "boxd-match.sqlite"   # default
+
+# Local library roots, scanned read-only by `boxd-match scan`.
+# kind: "movies" or "shows". resolution: used when the file name has none.
+# optional = true for a removable drive: when it is absent, its last known files are kept.
+[[roots]]
+id = "M1"
+path = 'D:\Media\Movies'
+kind = "movies"
+resolution = "1080p"
+optional = false
+
+[[roots]]
+id = "S1"
+path = 'D:\Media\Shows'
+kind = "shows"
+resolution = "1080p"
+optional = false
