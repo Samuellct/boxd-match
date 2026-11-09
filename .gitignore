@@ -1,0 +1,28 @@
+# Exclusion first: ignore everything, then allow only what is versioned.
+*
+!*/
+
+# Versioned files
+!.gitignore
+!README.md
+!pyproject.toml
+!uv.lock
+!src/**
+!tests/**
+
+# Never versioned, even inside allowed folders
+# Claude tooling
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.mcp.json
+# Build and runtime artefacts
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# Personal data
+.env
+*.sqlite
+*.sqlite3
+*.db
