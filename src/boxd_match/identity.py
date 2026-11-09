@@ -45,11 +45,21 @@ class Verdict:
     imdb_id: str | None = None
 
 
+_APOSTROPHES = re.compile("['’‘`´]")
+
+
 def normalize(title: str) -> str:
     text = unicodedata.normalize("NFKD", title)
     text = "".join(c for c in text if not unicodedata.combining(c)).casefold()
+    text = _APOSTROPHES.sub("", text)  # "Margo's" == "Margos", "Don't" == "Dont"
     text = text.replace("&", " and ")
     return " ".join(re.findall(r"[^\W_]+", text))
+
+
+def titles_match(name: str, titles: set[str]) -> bool:
+    """`titles` are normalized. Spacing differences are ignored too ("9/11" == "911")."""
+    wanted = normalize(name)
+    return wanted in titles or wanted.replace(" ", "") in {t.replace(" ", "") for t in titles}
 
 
 def tmdb_titles(tmdb_type: str, details: dict) -> set[str]:
@@ -103,7 +113,7 @@ def check_candidate(
         return Verdict(TO_REVIEW, reason, imdb_id=imdb)
     if require_find:
         return Verdict(TO_REVIEW, TYPE_UNVERIFIED, imdb_id=imdb)
-    if normalize(name) not in tmdb_titles(tmdb_type, details):
+    if not titles_match(name, tmdb_titles(tmdb_type, details)):
         return Verdict(TO_REVIEW, TITLE_MISMATCH, imdb_id=imdb)
     if not years_close(year, tmdb_year(tmdb_type, details)):
         return Verdict(TO_REVIEW, YEAR_MISMATCH, imdb_id=imdb)

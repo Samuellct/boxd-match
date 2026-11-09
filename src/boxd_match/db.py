@@ -110,6 +110,11 @@ CREATE TABLE IF NOT EXISTS local_tag (
     checked_at TEXT NOT NULL,
     PRIMARY KEY (tag_key, kind)
 );
+-- Manual decisions on local tags (review file). Permanent; reapplied after every check.
+CREATE TABLE IF NOT EXISTS tag_decision (
+    tag_key TEXT NOT NULL, kind TEXT NOT NULL, decision TEXT NOT NULL, decided_at TEXT NOT NULL,
+    PRIMARY KEY (tag_key, kind)
+);
 -- Letterboxd film -> local files. Rebuilt by `match`.
 CREATE TABLE IF NOT EXISTS local_match (
     uri TEXT PRIMARY KEY, state TEXT NOT NULL,  -- present | partial | absent

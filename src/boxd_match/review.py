@@ -24,6 +24,7 @@ from boxd_match.db import CONFIRMED, TO_REVIEW, UNRESOLVED, now
 from boxd_match.identity import BY_MANUAL
 from boxd_match.resolver import MANUAL
 
+_TAG_DECISION = re.compile(r"^(ok|ignore|(movie|tv)/[1-9]\d*)$")
 _DECISION = re.compile(r"^(movie|tv)/([1-9]\d*)(?:/season/(\d+)(?:/episode/([1-9]\d*))?)?$")
 MANUAL_NONE = "manual_none"
 
@@ -35,6 +36,11 @@ _HEADER = """\
 # decision = "tv/ID/season/N/episode/M" -> one episode (season 0 = specials)
 # decision = "none"                 -> not on TMDB
 # decision = ""                     -> skipped, decide later
+#
+# [[tag]] blocks are local file tags whose TMDB title does not match the file name:
+# decision = "ok"                   -> the tag is right (only the name differs)
+# decision = "movie/ID" or "tv/ID"  -> the file is this title instead
+# decision = "ignore"               -> leave this item out of the matching
 # Applying is safe to repeat and accepts a partly filled file.
 
 """
@@ -75,6 +81,37 @@ def _candidates(conn: sqlite3.Connection, row: sqlite3.Row) -> list[str]:
 class ExportResult:
     path: Path
     films: int
+    tags: int = 0
+
+
+def _tag_blocks(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        "SELECT t.* FROM local_tag t LEFT JOIN tag_decision d ON d.tag_key = t.tag_key AND d.kind = t.kind"
+        " WHERE t.status IN ('suspect', 'not_found') AND d.tag_key IS NULL ORDER BY t.status, t.title"
+    ).fetchall()
+    blocks = []
+    for row in rows:
+        target = ""
+        if row["tmdb_id"]:
+            key = f"{row['tmdb_type']}/{row['tmdb_id']}"
+            cached = conn.execute("SELECT body FROM tmdb_cache WHERE key = ?", (key,)).fetchone()
+            target = _describe(row["tmdb_type"], json.loads(cached[0])) if cached and cached[0] else key
+        files = [r[0] for r in conn.execute(
+            "SELECT path FROM local_file WHERE tag_key = ? AND kind = ? ORDER BY path", (row["tag_key"], row["kind"]))]
+        local_name = "{} ({})".format(row["title"], row["year"] or "?")
+        blocks.append("\n".join([
+            "[[tag]]",
+            f"tag = {_toml(row['tag_key'])}",
+            f"kind = {_toml(row['kind'])}",
+            f"local_name = {_toml(local_name)}",
+            f"status = {_toml(row['status'])}",
+            f"reason = {_toml(row['reason'] or '')}",
+            f"tmdb = {_toml(target)}",
+            "files = [" + "".join(f"\n  {_toml(f)}," for f in files[:5]) + ("\n]" if files else "]"),
+            'decision = ""',
+            "",
+        ]))
+    return blocks
 
 
 def export_review(conn: sqlite3.Connection, path: str | Path, force: bool = False) -> ExportResult:
@@ -103,8 +140,9 @@ def export_review(conn: sqlite3.Connection, path: str | Path, force: bool = Fals
             'decision = ""',
             "",
         ]))
-    path.write_text("\n".join(blocks), encoding="utf-8")
-    return ExportResult(path, len(rows))
+    tags = _tag_blocks(conn)
+    path.write_text("\n".join(blocks + tags), encoding="utf-8")
+    return ExportResult(path, len(rows), len(tags))
 
 
 def _parse(decision: str) -> tuple[str, str, int | None, int | None] | None:
@@ -146,9 +184,25 @@ def apply_review(conn: sqlite3.Connection, path: str | Path) -> ApplyResult:
             )
         else:
             decisions.append((uri, decision))
+    tag_blocks = data.get("tag", [])
+    tag_decisions: list[tuple[str, str, str]] = []
+    for n, block in enumerate(tag_blocks, 1):
+        tag_key, kind = str(block.get("tag", "")), str(block.get("kind", ""))
+        decision = str(block.get("decision", "")).strip()
+        if not decision:
+            continue
+        known = conn.execute("SELECT 1 FROM local_tag WHERE tag_key = ? AND kind = ?", (tag_key, kind)).fetchone()
+        if known is None:
+            errors.append(f"tag block {n}: unknown tag {tag_key!r} ({kind})")
+        elif not _TAG_DECISION.match(decision):
+            errors.append(f"tag block {n} ({tag_key}): decision {decision!r} is not ok, ignore, movie/ID or tv/ID")
+        else:
+            tag_decisions.append((tag_key, kind, decision))
     if errors:
         raise ReviewError("nothing applied:\n  " + "\n  ".join(errors))
     with conn:
+        for tag_key, kind, decision in tag_decisions:
+            conn.execute("INSERT OR REPLACE INTO tag_decision VALUES (?, ?, ?, ?)", (tag_key, kind, decision, now()))
         for uri, decision in decisions:
             conn.execute("INSERT OR REPLACE INTO review_decision VALUES (?, ?, ?)", (uri, decision, now()))
             if decision == "none":
@@ -164,4 +218,9 @@ def apply_review(conn: sqlite3.Connection, path: str | Path) -> ApplyResult:
                     " tmdb_id = ?, tmdb_season = ?, tmdb_episode = ?, checked_at = ? WHERE uri = ?",
                     (MANUAL, CONFIRMED, BY_MANUAL, tmdb_type, tmdb_id, season, episode, now(), uri),
                 )
-    return ApplyResult(applied=len(decisions), skipped=len(blocks) - len(decisions))
+    if tag_decisions:
+        from boxd_match.localtags import apply_tag_decisions
+
+        apply_tag_decisions(conn)
+    applied = len(decisions) + len(tag_decisions)
+    return ApplyResult(applied=applied, skipped=len(blocks) + len(tag_blocks) - applied)

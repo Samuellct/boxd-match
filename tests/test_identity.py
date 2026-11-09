@@ -201,3 +201,17 @@ def test_cli_coverage(export_dir: Path, tmp_path: Path, capsys: pytest.CaptureFi
     out = json.loads(capsys.readouterr().out)
     assert out["by_status"] == {"pending": 8}
     assert len(out["films"]) == 8
+
+
+@pytest.mark.parametrize(("local", "tmdb"), [
+    ("Margos Got Money Troubles", "Margo's Got Money Troubles"),
+    ("Good Luck Have Fun Dont Die", "Good Luck, Have Fun, Don’t Die"),
+    ("Fahrenheit 911", "Fahrenheit 9/11"),
+])
+def test_titles_match_ignores_apostrophes_and_spacing(local: str, tmdb: str) -> None:
+    assert idt.titles_match(local, {idt.normalize(tmdb)})
+
+
+def test_titles_match_still_rejects_other_titles() -> None:
+    assert not idt.titles_match("Mission Impossible 1", {idt.normalize("Mission: Impossible")})
+    assert not idt.titles_match("Flagrant délit", {idt.normalize("The Apartment"), idt.normalize("La Garçonnière")})

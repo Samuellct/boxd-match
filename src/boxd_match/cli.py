@@ -45,6 +45,14 @@ def build_parser() -> argparse.ArgumentParser:
     scn = commands.add_parser("scan", help="scan the local library roots of the config, read-only (no network)")
     _db_options(scn)
 
+    chk = commands.add_parser("check-tags", help="check the ids in local file names against TMDB")
+    chk.add_argument("--recheck", action="store_true", help="check every tag again, not only new ones")
+    _db_options(chk)
+
+    mat = commands.add_parser("match", help="match identified films with local files (no network)")
+    mat.add_argument("--all", action="store_true", help="list every item, not only 20 per section")
+    _db_options(mat)
+
     rev = commands.add_parser("review", help="manual review through a TOML file (no network)")
     actions = rev.add_subparsers(dest="review_action", required=True)
     rexp = actions.add_parser("export", help="write films to review into a TOML file")
@@ -160,7 +168,8 @@ def _cmd_review(args: argparse.Namespace, config: Config) -> int:
     try:
         if args.review_action == "export":
             r = review.export_review(conn, args.output, force=args.force)
-            _emit(args, {"file": str(r.path), "films": r.films}, [f"{r.films} films written to {r.path}"])
+            _emit(args, {"file": str(r.path), "films": r.films, "tags": r.tags},
+                  [f"{r.films} films and {r.tags} local tags written to {r.path}"])
         else:
             r = review.apply_review(conn, args.file)
             _emit(args, {"applied": r.applied, "skipped": r.skipped},
@@ -193,9 +202,95 @@ def _cmd_scan(args: argparse.Namespace, config: Config) -> int:
     return 1 if missing else 0
 
 
+def _cmd_check_tags(args: argparse.Namespace, config: Config) -> int:
+    from boxd_match import localtags, net, tmdb
+
+    conn = _open_db(args, config)
+    try:
+        client = tmdb.TmdbClient(net.tmdb_transport(), tmdb.load_api_key(), conn)
+        progress = localtags.check_tags(conn, client, resolver.stderr_report, recheck=args.recheck)
+    except (tmdb.TmdbError, net.NetworkError, net.ForbiddenHost) as error:
+        raise resolver.ResolveError(str(error)) from None
+    totals = {r[0]: r[1] for r in conn.execute("SELECT status, COUNT(*) FROM local_tag GROUP BY status")}
+    flagged = conn.execute(
+        "SELECT t.status, t.reason, t.kind, t.tag_key, t.title, t.year, t.tmdb_type, t.tmdb_id FROM local_tag t"
+        " WHERE t.status != 'ok' ORDER BY t.status, t.reason, t.title"
+    ).fetchall()
+    data = {"checked": progress.done, "outcomes": progress.counts, "tmdb_requests": client.requests,
+            "totals": totals, "flagged": [dict(r) for r in flagged]}
+    lines = [f"checked now    {progress.done}", f"tmdb requests  {client.requests}", "all tags"]
+    lines += [f"  {k:<12}{v}" for k, v in sorted(totals.items())]
+    for r in flagged:
+        target = f"{r['tmdb_type']}/{r['tmdb_id']}" if r["tmdb_id"] else "-"
+        lines.append(f"  {r['status']:<10}{(r['reason'] or ''):<16}{r['title']} ({r['year']}) {r['tag_key']} -> {target}")
+    _emit(args, data, lines)
+    return 0
+
+
+def _cmd_match(args: argparse.Namespace, config: Config) -> int:
+    from boxd_match import matching
+
+    conn = _open_db(args, config)
+    result = matching.match(conn)
+    breakdown = matching.status_breakdown(conn)
+    partial = conn.execute(
+        "SELECT f.name, f.year, m.episodes_local, m.episodes_total FROM local_match m JOIN film f ON f.uri = m.uri"
+        " WHERE m.state = 'partial' ORDER BY f.name"
+    ).fetchall()
+    unavailable = conn.execute("SELECT COUNT(*) FROM local_file WHERE available = 0").fetchone()[0]
+    unidentified = conn.execute(
+        "SELECT COUNT(*) FROM identity i JOIN film f ON f.uri = i.uri WHERE i.status != 'confirmed'"
+        " OR i.tmdb_id IS NULL"
+    ).fetchone()[0]
+
+    def item(i):
+        return {"tag": i.tag_key, "kind": i.kind, "title": i.title, "year": i.year, "tag_status": i.tag_status,
+                "tmdb": "/".join(i.tmdb_key) if i.tmdb_key else None, "files": [f["path"] for f in i.files]}
+
+    data = {
+        "states": result.states, "by_letterboxd_status": breakdown,
+        "not_identified_on_letterboxd": unidentified, "unavailable_files": unavailable,
+        "matched_on_unchecked_tags": result.unchecked_used,
+        "partial": [dict(r) for r in partial],
+        "local_only": [item(i) for i in result.local_only],
+        "flagged_tags": [item(i) for i in result.flagged_tags],
+        "untagged_suggestions": result.suggestions,
+    }
+    limit = None if args.all else 20
+
+    def section(title: str, entries: list[str]) -> list[str]:
+        shown = entries[:limit] if limit else entries
+        more = [f"    ... {len(entries) - len(shown)} more (--all)"] if len(entries) > len(shown) else []
+        return [f"{title} ({len(entries)})"] + [f"    {e}" for e in shown] + more
+
+    lines = ["Letterboxd films (identified) -> local"]
+    lines += [f"  {k:<10}{result.states.get(k, 0)}" for k in ("present", "partial", "absent")]
+    lines.append(f"  not identified, skipped: {unidentified}")
+    for group, label in (("watched", "watched"), ("to_watch", "to watch"), ("owned_role", "lists with role owned")):
+        counts = breakdown.get(group, {})
+        lines.append(f"  {label:<22} present {counts.get('present', 0)}, partial {counts.get('partial', 0)},"
+                     f" absent {counts.get('absent', 0)}")
+    if unavailable:
+        lines.append(f"  files on absent roots (last known): {unavailable}")
+    if result.unchecked_used:
+        lines.append(f"  matched on tags not checked yet: {result.unchecked_used} (run check-tags)")
+    lines += section("partial series", [f"{r['name']} ({r['year']}) {r['episodes_local']}/{r['episodes_total']} episodes"
+                                        for r in partial])
+    lines += section("flagged local tags (never matched)", [
+        f"{i.tag_status:<10}{i.title} ({i.year}) {i.tag_key} -> {'/'.join(i.tmdb_key) if i.tmdb_key else '-'}"
+        for i in result.flagged_tags])
+    lines += section("local items not on Letterboxd", [
+        f"{i.kind:<7}{i.title} ({i.year}) {i.tag_key}" for i in result.local_only])
+    lines += section("untagged local items (suggestions only)", [
+        f"{s['root']} {s['item']} -> {', '.join(s['candidates']) or 'no suggestion'}" for s in result.suggestions])
+    _emit(args, data, lines)
+    return 0
+
+
 _DB_COMMANDS = {
     "import": _cmd_import, "seed": _cmd_seed, "resolve": _cmd_resolve,
     "coverage": _cmd_coverage, "review": _cmd_review, "scan": _cmd_scan,
+    "check-tags": _cmd_check_tags, "match": _cmd_match,
 }
 
 
