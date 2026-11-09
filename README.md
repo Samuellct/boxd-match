@@ -36,7 +36,7 @@ Every command takes `--json`.
 - **`seed`** loads an old `letterboxd_ids.json` cache as unchecked candidates. It never confirms anything.
 - **`resolve`** checks candidates on TMDB first. It reads a Letterboxd film page only when TMDB cannot confirm the title, at most 1 request per second, with a `boxd-match/<version>` User-Agent. It stops with exit code 3 on a block (403, 503, challenge page, repeated 429) and resumes where it stopped when run again. `--tmdb-only` skips the page reads.
 - **Statuses:** each film ends `confirmed`, `to_review` (with a reason) or `unresolved`. A title is confirmed only when a second source agrees: TMDB `/find` on the IMDb id, or title and year (±2) against TMDB.
-- **`review export`** writes one block per film to review, with its Letterboxd link and the TMDB candidates. Fill `decision` with `movie/ID`, `tv/ID` or `none`, then run `review apply`. A partly filled file is fine, and applying it again is safe.
+- **`review export`** writes one block per film to review, with its Letterboxd link and the TMDB candidates. Fill `decision` with `movie/ID`, `tv/ID`, `tv/ID/season/N` (one season), `tv/ID/season/N/episode/M` (one episode; season 0 holds the specials) or `none`, then run `review apply`. A partly filled file is fine, and applying it again is safe.
 
 ## Pipeline
 

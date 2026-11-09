@@ -94,3 +94,31 @@ def test_cli_review_round_trip(resolved, tmp_path: Path, capsys: pytest.CaptureF
     assert "applied 1, skipped (empty decision) 3" in capsys.readouterr().out
     assert main(["review", "export", "--db", str(path), "--output", str(out)]) == 2
     assert "already exists" in capsys.readouterr().err
+
+
+def test_season_and_episode_decisions(resolved, tmp_path: Path) -> None:
+    conn, _ = resolved
+    out = tmp_path / "review.toml"
+    review.export_review(conn, out)
+    _fill(out, {"https://boxd.it/f5": "tv/1920/season/3", "https://boxd.it/f7": "tv/85552/season/0/episode/1"})
+    assert review.apply_review(conn, out).applied == 2
+    rows = {r["uri"]: r for r in conn.execute("SELECT * FROM identity")}
+    f5, f7 = rows["https://boxd.it/f5"], rows["https://boxd.it/f7"]
+    assert (f5["status"], f5["tmdb_type"], f5["tmdb_id"], f5["tmdb_season"], f5["tmdb_episode"]) == (
+        "confirmed", "tv", "1920", 3, None)
+    assert (f7["tmdb_id"], f7["tmdb_season"], f7["tmdb_episode"]) == ("85552", 0, 1)
+    # Back to a whole series clears the part.
+    out2 = tmp_path / "again.toml"
+    out2.write_text('[[film]]\nuri = "https://boxd.it/f5"\ndecision = "tv/1920"\n', encoding="utf-8")
+    review.apply_review(conn, out2)
+    row = conn.execute("SELECT tmdb_season, tmdb_episode FROM identity WHERE uri = 'https://boxd.it/f5'").fetchone()
+    assert tuple(row) == (None, None)
+
+
+@pytest.mark.parametrize("decision", ["movie/1/season/1", "tv/1/episode/2", "tv/1/season/x", "tv/0"])
+def test_invalid_part_decisions(resolved, tmp_path: Path, decision: str) -> None:
+    conn, _ = resolved
+    out = tmp_path / "bad.toml"
+    out.write_text(f'[[film]]\nuri = "https://boxd.it/f5"\ndecision = "{decision}"\n', encoding="utf-8")
+    with pytest.raises(review.ReviewError, match="nothing applied"):
+        review.apply_review(conn, out)

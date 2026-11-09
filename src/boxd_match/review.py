@@ -4,6 +4,8 @@
 `unresolved` (manual decisions excluded). The user fills `decision`, then
 `apply_review` records it:
     "movie/ID" or "tv/ID"  -> confirmed, method `manual`
+    "tv/ID/season/N"       -> one season of a series (Twin Peaks: The Return)
+    "tv/ID/season/N/episode/M" -> one episode; season 0 holds the specials
     "none"                 -> unresolved, reason `manual_none` (not on TMDB)
     ""                     -> skipped, decide later
 The whole file is validated before anything is written.
@@ -22,13 +24,15 @@ from boxd_match.db import CONFIRMED, TO_REVIEW, UNRESOLVED, now
 from boxd_match.identity import BY_MANUAL
 from boxd_match.resolver import MANUAL
 
-_DECISION = re.compile(r"^(movie|tv)/([1-9]\d*)$")
+_DECISION = re.compile(r"^(movie|tv)/([1-9]\d*)(?:/season/(\d+)(?:/episode/([1-9]\d*))?)?$")
 MANUAL_NONE = "manual_none"
 
 _HEADER = """\
 # boxd-match review file. Fill `decision` for each film, then run:
 #   boxd-match review apply {name}
 # decision = "movie/ID" or "tv/ID"  -> confirmed with this TMDB id
+# decision = "tv/ID/season/N"       -> one season of the series
+# decision = "tv/ID/season/N/episode/M" -> one episode (season 0 = specials)
 # decision = "none"                 -> not on TMDB
 # decision = ""                     -> skipped, decide later
 # Applying is safe to repeat and accepts a partly filled file.
@@ -103,6 +107,17 @@ def export_review(conn: sqlite3.Connection, path: str | Path, force: bool = Fals
     return ExportResult(path, len(rows))
 
 
+def _parse(decision: str) -> tuple[str, str, int | None, int | None] | None:
+    """`tv/1920/season/3` -> ("tv", "1920", 3, None). Seasons and episodes are TV only."""
+    match = _DECISION.match(decision)
+    if match is None:
+        return None
+    tmdb_type, tmdb_id, season, episode = match.groups()
+    if tmdb_type == "movie" and season is not None:
+        return None
+    return tmdb_type, tmdb_id, (int(season) if season is not None else None), (int(episode) if episode else None)
+
+
 @dataclass
 class ApplyResult:
     applied: int
@@ -124,8 +139,11 @@ def apply_review(conn: sqlite3.Connection, path: str | Path) -> ApplyResult:
             continue
         if conn.execute("SELECT 1 FROM identity WHERE uri = ?", (uri,)).fetchone() is None:
             errors.append(f"block {n}: unknown uri {uri!r}")
-        elif decision != "none" and not _DECISION.match(decision):
-            errors.append(f"block {n} ({uri}): decision {decision!r} is not movie/ID, tv/ID or none")
+        elif decision != "none" and not _parse(decision):
+            errors.append(
+                f"block {n} ({uri}): decision {decision!r} is not movie/ID, tv/ID,"
+                " tv/ID/season/N, tv/ID/season/N/episode/M or none"
+            )
         else:
             decisions.append((uri, decision))
     if errors:
@@ -136,14 +154,14 @@ def apply_review(conn: sqlite3.Connection, path: str | Path) -> ApplyResult:
             if decision == "none":
                 conn.execute(
                     "UPDATE identity SET source = ?, status = ?, reason = ?, method = NULL, tmdb_type = NULL,"
-                    " tmdb_id = NULL, checked_at = ? WHERE uri = ?",
+                    " tmdb_id = NULL, tmdb_season = NULL, tmdb_episode = NULL, checked_at = ? WHERE uri = ?",
                     (MANUAL, UNRESOLVED, MANUAL_NONE, now(), uri),
                 )
             else:
-                tmdb_type, tmdb_id = decision.split("/")
+                tmdb_type, tmdb_id, season, episode = _parse(decision)
                 conn.execute(
                     "UPDATE identity SET source = ?, status = ?, reason = NULL, method = ?, tmdb_type = ?,"
-                    " tmdb_id = ?, checked_at = ? WHERE uri = ?",
-                    (MANUAL, CONFIRMED, BY_MANUAL, tmdb_type, tmdb_id, now(), uri),
+                    " tmdb_id = ?, tmdb_season = ?, tmdb_episode = ?, checked_at = ? WHERE uri = ?",
+                    (MANUAL, CONFIRMED, BY_MANUAL, tmdb_type, tmdb_id, season, episode, now(), uri),
                 )
     return ApplyResult(applied=len(decisions), skipped=len(blocks) - len(decisions))

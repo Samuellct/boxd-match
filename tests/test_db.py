@@ -93,3 +93,21 @@ def test_database_path_from_config(export_dir: Path, tmp_path: Path) -> None:
     config.write_text(f'[paths]\ndatabase = "{target.as_posix()}"\n', encoding="utf-8")
     assert main(["import", str(export_dir), "--config", str(config)]) == 0
     assert target.exists()
+
+
+def test_migration_from_v1_keeps_data(tmp_path: Path) -> None:
+    path = tmp_path / "v1.sqlite"
+    raw = sqlite3.connect(path)
+    raw.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+        "INSERT INTO meta VALUES ('schema_version', '1');"
+        "CREATE TABLE identity (uri TEXT PRIMARY KEY, source TEXT, tmdb_type TEXT, tmdb_id TEXT, imdb_id TEXT,"
+        " slug TEXT, status TEXT NOT NULL, reason TEXT, method TEXT, checked_at TEXT);"
+        "INSERT INTO identity (uri, status, tmdb_type, tmdb_id) VALUES ('https://boxd.it/x', 'confirmed', 'tv', '1');"
+    )
+    raw.commit()
+    raw.close()
+    conn = db.connect(path)
+    row = conn.execute("SELECT status, tmdb_id, tmdb_season, tmdb_episode FROM identity").fetchone()
+    assert tuple(row) == ("confirmed", "1", None, None)
+    assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(db.SCHEMA_VERSION)

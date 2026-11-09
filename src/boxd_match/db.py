@@ -20,7 +20,7 @@ from pathlib import Path
 
 from boxd_match.films import ATTACHED, Library
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Identity statuses. `pending` = not checked yet; `needs_page` = the legacy
 # cache candidate failed the TMDB check, so the Letterboxd page must be read.
@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS identity (
     source TEXT,          -- legacy | page | manual
     tmdb_type TEXT,       -- movie | tv | NULL (legacy: unknown)
     tmdb_id TEXT,
+    tmdb_season INTEGER,  -- set when the Letterboxd entry is one season of a series
+    tmdb_episode INTEGER, -- set when it is one episode (season 0 = specials)
     imdb_id TEXT,
     slug TEXT,
     status TEXT NOT NULL,
@@ -87,6 +89,14 @@ CREATE TABLE IF NOT EXISTS review_decision (
 );
 """
 
+# Additive migrations, by target version. Never drop or rewrite user data.
+_MIGRATIONS = {
+    2: (
+        "ALTER TABLE identity ADD COLUMN tmdb_season INTEGER",
+        "ALTER TABLE identity ADD COLUMN tmdb_episode INTEGER",
+    ),
+}
+
 _EXPORT_TABLES = ("film", "viewing", "entry_link", "list", "list_entry", "orphan")
 
 
@@ -106,8 +116,15 @@ def connect(path: str | Path) -> sqlite3.Connection:
     if row is None:
         conn.execute("INSERT INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
         conn.commit()
-    elif int(row["value"]) != SCHEMA_VERSION:
-        raise SchemaError(f"{path}: schema version {row['value']}, expected {SCHEMA_VERSION}")
+        return conn
+    version = int(row["value"])
+    if version > SCHEMA_VERSION:
+        raise SchemaError(f"{path}: schema version {version} is newer than this boxd-match ({SCHEMA_VERSION})")
+    for target in range(version + 1, SCHEMA_VERSION + 1):
+        with conn:
+            for statement in _MIGRATIONS[target]:
+                conn.execute(statement)
+            conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(target),))
     return conn
 
 

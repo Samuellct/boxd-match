@@ -131,7 +131,8 @@ def _cmd_coverage(args: argparse.Namespace, config: Config) -> int:
     conn = _open_db(args, config)
     counts = db.identity_counts(conn)
     rows = conn.execute(
-        "SELECT f.name, f.year, i.uri, i.status, i.reason, i.tmdb_type, i.tmdb_id FROM identity i"
+        "SELECT f.name, f.year, i.uri, i.status, i.reason, i.tmdb_type, i.tmdb_id, i.tmdb_season,"
+        " i.tmdb_episode FROM identity i"
         " JOIN film f ON f.uri = i.uri WHERE i.status != 'confirmed' ORDER BY i.status, i.reason, f.name"
     ).fetchall()
     data = {**counts, "films": [dict(r) for r in rows]}
