@@ -1,0 +1,8 @@
+# Copy to boxd-match.toml (git-ignored) and pass it with --config.
+#
+# [lists] maps a list file name (lists/<name>.csv, without .csv) to its roles.
+# "watchlist" adds the list to the watchlist: to watch = (watchlist.csv + these lists) - watched.
+# Other roles (e.g. "owned") are kept as labels for later stages.
+[lists]
+"watchlist-dispo-en-local" = ["watchlist"]
+"collection-perso" = ["owned"]

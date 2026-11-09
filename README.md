@@ -2,7 +2,7 @@
 
 Reads the official Letterboxd export (ZIP or folder), identifies every title by TMDB/IMDb id, keeps each list apart (watched, watchlist, likes, ratings, diary, custom lists) and matches titles against a local media library (tagged file names and Jellyfin).
 
-Status: repository skeleton. Nothing is implemented yet.
+Status: stages 1, 2 and 5 work offline (`summary` command). Stages 3, 4 and 6 are not implemented yet.
 
 ## Setup
 
@@ -11,6 +11,16 @@ uv sync
 uv run pytest
 uv run boxd-match --version
 ```
+
+## Usage
+
+```bash
+cp boxd-match.example.toml boxd-match.toml   # list roles, git-ignored
+uv run boxd-match summary path/to/export-folder-or.zip --config boxd-match.toml
+uv run boxd-match summary path/to/export --config boxd-match.toml --json
+```
+
+`summary` reads the export without any network access and prints counts: films, watched, watchlist, "to watch", diary entries attached to their film, entries left for redirect resolution (stage 3), orphaned rows with title+year suggestions.
 
 ## Planned pipeline
 
