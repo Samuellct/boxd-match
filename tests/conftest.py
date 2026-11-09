@@ -112,3 +112,59 @@ def config_file(tmp_path: Path) -> Path:
     path = tmp_path / "boxd-match.toml"
     path.write_text(CONFIG, encoding="utf-8")
     return path
+
+
+# Synthetic local library (jalon B). Empty files: only names and folders matter.
+LIBRARY_FILES = {
+    "movies": [
+        "Dune (2021) [imdbid-tt1160419]/Dune (2021) [imdbid-tt1160419] - 1080p - FR.mkv",
+        "Heat (1995) [tmdbid-949].mkv",
+        "Flagrant délit (1960) [imdbid-tt0053604]/Flagrant délit (1960) [imdbid-tt0053604].mkv",
+        "Untagged Movie (2001)/Untagged Movie (2001).mkv",
+        "Paris, Texas (1984)/Paris.Texas.1984.MULTi.1080p.mkv",
+        "Dune (2021) [imdbid-tt1160419]/notes.txt",
+    ],
+    "uhd": [
+        "Dune (2021) [imdbid-tt1160419]/Dune (2021) [imdbid-tt1160419] - 2160p - FR - HDR.mkv",
+    ],
+    "shows": [
+        "Twin Peaks (1990) [tmdbid-1920]/Season 03/Twin Peaks S03E01.mkv",
+        "Twin Peaks (1990) [tmdbid-1920]/Season 03/Twin Peaks S03E02.mkv",
+        "Twin Peaks (1990) [tmdbid-1920]/Season 00/Twin Peaks S00E01.mkv",
+        "Normal People (2020) [imdbid-tt9059760]/Season 01/Normal People S01E01.mkv",
+        "Normal People (2020) [imdbid-tt9059760]/Season 01/Normal People S01E02.mkv",
+    ],
+}
+
+
+def write_library(base: Path) -> dict[str, Path]:
+    roots = {}
+    for name, files in LIBRARY_FILES.items():
+        root = base / name
+        for relative in files:
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"")
+        roots[name] = root
+    return roots
+
+
+def library_config(base: Path) -> str:
+    roots = write_library(base)
+    toml = []
+    for root_id, kind, res, optional, path in (
+        ("M", "movies", "1080p", False, roots["movies"]),
+        ("U", "movies", "2160p", False, roots["uhd"]),
+        ("S", "shows", "1080p", False, roots["shows"]),
+        ("H", "movies", "2160p", True, base / "missing-drive"),
+    ):
+        toml.append(f'[[roots]]\nid = "{root_id}"\npath = \'{path}\'\nkind = "{kind}"\n'
+                    f'resolution = "{res}"\noptional = {str(optional).lower()}\n')
+    return "\n".join(toml)
+
+
+@pytest.fixture
+def library_config_file(tmp_path: Path) -> Path:
+    path = tmp_path / "library.toml"
+    path.write_text(CONFIG + "\n" + library_config(tmp_path / "library"), encoding="utf-8")
+    return path

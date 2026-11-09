@@ -42,6 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     cov.add_argument("--all", action="store_true", help="list every non-confirmed film, not only 30")
     _db_options(cov)
 
+    scn = commands.add_parser("scan", help="scan the local library roots of the config, read-only (no network)")
+    _db_options(scn)
+
     rev = commands.add_parser("review", help="manual review through a TOML file (no network)")
     actions = rev.add_subparsers(dest="review_action", required=True)
     rexp = actions.add_parser("export", help="write films to review into a TOML file")
@@ -168,9 +171,31 @@ def _cmd_review(args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
+def _cmd_scan(args: argparse.Namespace, config: Config) -> int:
+    from boxd_match import local
+
+    if not config.roots:
+        print("boxd-match: error: no [[roots]] in the config", file=sys.stderr)
+        return 2
+    statuses = local.scan(_open_db(args, config), config.roots)
+    data = {"roots": [vars(s) for s in statuses]}
+    lines = []
+    for s in statuses:
+        if s.present:
+            state = "ok"
+        elif s.optional:
+            state = "absent (removable, last known files kept)"
+        else:
+            state = "ABSENT (last known files kept)"
+        lines.append(f"  {s.id:<6}{s.files:>6} files  {state}  {s.path}")
+    _emit(args, data, lines)
+    missing = [s.id for s in statuses if not s.present and not s.optional]
+    return 1 if missing else 0
+
+
 _DB_COMMANDS = {
     "import": _cmd_import, "seed": _cmd_seed, "resolve": _cmd_resolve,
-    "coverage": _cmd_coverage, "review": _cmd_review,
+    "coverage": _cmd_coverage, "review": _cmd_review, "scan": _cmd_scan,
 }
 
 

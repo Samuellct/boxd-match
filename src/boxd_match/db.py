@@ -20,7 +20,7 @@ from pathlib import Path
 
 from boxd_match.films import ATTACHED, Library
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Identity statuses. `pending` = not checked yet; `needs_page` = the legacy
 # cache candidate failed the TMDB check, so the Letterboxd page must be read.
@@ -87,6 +87,36 @@ CREATE TABLE IF NOT EXISTS find_cache (
 CREATE TABLE IF NOT EXISTS review_decision (
     uri TEXT PRIMARY KEY, decision TEXT NOT NULL, decided_at TEXT NOT NULL
 );
+
+-- Local library (jalon B). Files are rebuilt per root on each scan.
+CREATE TABLE IF NOT EXISTS local_root (
+    id TEXT PRIMARY KEY, path TEXT NOT NULL, kind TEXT NOT NULL, optional INTEGER NOT NULL,
+    available INTEGER NOT NULL, checked_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS local_file (
+    path TEXT PRIMARY KEY, root TEXT NOT NULL, kind TEXT NOT NULL, item TEXT NOT NULL,
+    tag_key TEXT,          -- "imdb:tt123" | "tmdb:456" | NULL (untagged)
+    title TEXT NOT NULL, year INTEGER, season INTEGER, episode INTEGER,
+    res TEXT, edition TEXT, flags TEXT, bytes INTEGER NOT NULL, mtime INTEGER,
+    available INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS local_file_tag ON local_file (tag_key);
+-- Check of each local tag against TMDB. Permanent, keyed by tag and kind.
+CREATE TABLE IF NOT EXISTS local_tag (
+    tag_key TEXT NOT NULL, kind TEXT NOT NULL,
+    tmdb_type TEXT, tmdb_id TEXT, imdb_id TEXT,
+    status TEXT NOT NULL,  -- ok | suspect | not_found
+    reason TEXT, title TEXT, year INTEGER,  -- the local name that was checked
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (tag_key, kind)
+);
+-- Letterboxd film -> local files. Rebuilt by `match`.
+CREATE TABLE IF NOT EXISTS local_match (
+    uri TEXT PRIMARY KEY, state TEXT NOT NULL,  -- present | partial | absent
+    method TEXT,           -- tmdb | imdb
+    tag_keys TEXT NOT NULL, files TEXT NOT NULL,  -- JSON lists
+    episodes_local INTEGER, episodes_total INTEGER, resolutions TEXT NOT NULL
+);
 """
 
 # Additive migrations, by target version. Never drop or rewrite user data.
@@ -95,6 +125,7 @@ _MIGRATIONS = {
         "ALTER TABLE identity ADD COLUMN tmdb_season INTEGER",
         "ALTER TABLE identity ADD COLUMN tmdb_episode INTEGER",
     ),
+    3: (),  # local_* tables: created by the schema script
 }
 
 _EXPORT_TABLES = ("film", "viewing", "entry_link", "list", "list_entry", "orphan")
