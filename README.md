@@ -2,33 +2,47 @@
 
 Reads the official Letterboxd export (ZIP or folder), identifies every title by TMDB/IMDb id, keeps each list apart (watched, watchlist, likes, ratings, diary, custom lists) and matches titles against a local media library (tagged file names and Jellyfin).
 
-Status: stages 1, 2 and 5 work offline (`summary` command). Stages 3, 4 and 6 are not implemented yet.
+Status: stages 1 to 5 work. Stage 6 (local matching) is not implemented yet.
 
 ## Setup
 
 ```bash
 uv sync
-uv run pytest
-uv run boxd-match --version
+uv run pytest                                  # never touches the network
+cp boxd-match.example.toml boxd-match.toml     # list roles and database path, git-ignored
+echo TMDB_API_KEY=... > .env                   # TMDB v3 key, git-ignored
 ```
 
 ## Usage
 
 ```bash
-cp boxd-match.example.toml boxd-match.toml   # list roles, git-ignored
-uv run boxd-match summary path/to/export-folder-or.zip --config boxd-match.toml
-uv run boxd-match summary path/to/export --config boxd-match.toml --json
+# Offline summary straight from the export
+uv run boxd-match summary path/to/export-folder-or.zip --config boxd-match.toml [--json]
+
+# Identification, stored in boxd-match.sqlite (path from [paths] database or --db)
+uv run boxd-match import path/to/export --config boxd-match.toml
+uv run boxd-match seed path/to/letterboxd_ids.json --config boxd-match.toml   # optional legacy cache
+uv run boxd-match resolve --config boxd-match.toml        # TMDB, then Letterboxd pages if needed
+uv run boxd-match coverage --config boxd-match.toml [--all]
+
+# Manual review of what could not be confirmed
+uv run boxd-match review export --config boxd-match.toml  # writes review.toml
+uv run boxd-match review apply review.toml --config boxd-match.toml
 ```
 
-`summary` reads the export without any network access and prints counts: films, watched, watchlist, "to watch", diary entries attached to their film, entries left for redirect resolution (stage 3), orphaned rows with title+year suggestions.
+Every command takes `--json`.
 
-## Planned pipeline
+- **`import`** rebuilds the export tables. Identities, caches and review decisions are kept.
+- **`seed`** loads an old `letterboxd_ids.json` cache as unchecked candidates. It never confirms anything.
+- **`resolve`** checks candidates on TMDB first. It reads a Letterboxd film page only when TMDB cannot confirm the title, at most 1 request per second, with a `boxd-match/<version>` User-Agent. It stops with exit code 3 on a block (403, 503, challenge page, repeated 429) and resumes where it stopped when run again. `--tmdb-only` skips the page reads.
+- **Statuses:** each film ends `confirmed`, `to_review` (with a reason) or `unresolved`. A title is confirmed only when a second source agrees: TMDB `/find` on the IMDb id, or title and year (±2) against TMDB.
+- **`review export`** writes one block per film to review, with its Letterboxd link and the TMDB candidates. Fill `decision` with `movie/ID`, `tv/ID` or `none`, then run `review apply`. A partly filled file is fine, and applying it again is safe.
+
+## Pipeline
 
 1. **Read the export.** CSV files and lists, plus `deleted/` and `orphaned/` kept apart.
 2. **Build the film URI table.** Diary and review entries are attached to their film.
-3. **Resolve each film URI once** from its Letterboxd page, with a permanent cache.
+3. **Resolve each film URI once**, from the legacy cache or its Letterboxd page, with a permanent cache.
 4. **Cross-check against TMDB.** Type, title and year must agree.
 5. **Compute statuses and list membership.**
-6. **Match local media** by `(type, tmdb_id)`, then by IMDb id.
-
-The background study (in French) lives outside this repository: `Audit_serveur/letterboxd-analyse/RAPPORT.md`.
+6. **Match local media** by `(type, tmdb_id)`, then by IMDb id. Not implemented yet.

@@ -42,6 +42,15 @@ def build_parser() -> argparse.ArgumentParser:
     cov.add_argument("--all", action="store_true", help="list every non-confirmed film, not only 30")
     _db_options(cov)
 
+    rev = commands.add_parser("review", help="manual review through a TOML file (no network)")
+    actions = rev.add_subparsers(dest="review_action", required=True)
+    rexp = actions.add_parser("export", help="write films to review into a TOML file")
+    rexp.add_argument("--output", default="review.toml", help="file to write (default: review.toml)")
+    rexp.add_argument("--force", action="store_true", help="overwrite an existing file")
+    _db_options(rexp)
+    rapp = actions.add_parser("apply", help="record the decisions of a filled review file")
+    rapp.add_argument("file", help="review file to apply")
+    _db_options(rapp)
     return parser
 
 
@@ -140,9 +149,27 @@ def _cmd_coverage(args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
+def _cmd_review(args: argparse.Namespace, config: Config) -> int:
+    from boxd_match import review
+
+    conn = _open_db(args, config)
+    try:
+        if args.review_action == "export":
+            r = review.export_review(conn, args.output, force=args.force)
+            _emit(args, {"file": str(r.path), "films": r.films}, [f"{r.films} films written to {r.path}"])
+        else:
+            r = review.apply_review(conn, args.file)
+            _emit(args, {"applied": r.applied, "skipped": r.skipped},
+                  [f"applied {r.applied}, skipped (empty decision) {r.skipped}"])
+    except review.ReviewError as error:
+        print(f"boxd-match: error: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
 _DB_COMMANDS = {
     "import": _cmd_import, "seed": _cmd_seed, "resolve": _cmd_resolve,
-    "coverage": _cmd_coverage,
+    "coverage": _cmd_coverage, "review": _cmd_review,
 }
 
 
