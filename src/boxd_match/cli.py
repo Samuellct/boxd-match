@@ -7,7 +7,7 @@ import json
 import sys
 
 from boxd_match import __version__
-from boxd_match import db
+from boxd_match import db, resolver
 from boxd_match.config import Config, ConfigError, load_config
 from boxd_match.export import ExportError, read_export
 from boxd_match.films import build_library, summarize
@@ -29,6 +29,19 @@ def build_parser() -> argparse.ArgumentParser:
     imp = commands.add_parser("import", help="load an export into the database (no network)")
     imp.add_argument("export", help="export folder or ZIP file")
     _db_options(imp)
+
+    seed = commands.add_parser("seed", help="load letterboxd_ids.json as unchecked candidates (no network)")
+    seed.add_argument("cache", help="path to letterboxd_ids.json")
+    _db_options(seed)
+
+    res = commands.add_parser("resolve", help="check identities on TMDB, read Letterboxd pages when needed")
+    res.add_argument("--tmdb-only", action="store_true", help="only check legacy candidates on TMDB")
+    _db_options(res)
+
+    cov = commands.add_parser("coverage", help="identity statuses and reasons (no network)")
+    cov.add_argument("--all", action="store_true", help="list every non-confirmed film, not only 30")
+    _db_options(cov)
+
     return parser
 
 
@@ -54,6 +67,7 @@ def _cmd_import(args: argparse.Namespace, config: Config) -> int:
     library = build_library(read_export(args.export), config)
     conn = _open_db(args, config)
     db.import_library(conn, library, str(args.export))
+    resolver.attach_redirects(conn)  # cached redirects only, no network
     c = db.export_counts(conn)
     _emit(args, c, [
         f"films                        {c['films']}",
@@ -68,7 +82,68 @@ def _cmd_import(args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
-_DB_COMMANDS = {"import": _cmd_import}
+def _cmd_seed(args: argparse.Namespace, config: Config) -> int:
+    r = resolver.seed_legacy(_open_db(args, config), args.cache)
+    data = {"seeded": r.seeded, "not_in_export": r.not_in_export, "kept": r.kept, "errors": r.errors}
+    _emit(args, data, [f"{k:<14}{v}" for k, v in data.items()])
+    return 0
+
+
+def _cmd_resolve(args: argparse.Namespace, config: Config) -> int:
+    from boxd_match import net, tmdb
+
+    conn = _open_db(args, config)
+    try:
+        client = tmdb.TmdbClient(net.tmdb_transport(), tmdb.load_api_key(), conn)
+        progress = resolver.check_legacy(conn, client, resolver.stderr_report)
+        fetcher = None
+        if not args.tmdb_only:
+            fetcher = resolver.PageFetcher(conn, net.letterboxd_transport())
+            pages = resolver.read_pages(conn, fetcher, client, resolver.stderr_report)
+            for key, value in pages.counts.items():
+                progress.counts[key] = progress.counts.get(key, 0) + value
+            progress.done += pages.done
+            resolver.attach_redirects(conn, fetcher)
+    except (tmdb.TmdbError, net.NetworkError, net.ForbiddenHost) as error:
+        raise resolver.ResolveError(str(error)) from None
+    data = {
+        "processed": progress.done, "outcomes": progress.counts, "tmdb_requests": client.requests,
+        "letterboxd_requests": fetcher.requests if fetcher else 0, "remaining": resolver.non_final(conn),
+    }
+    lines = [f"processed            {progress.done}", f"tmdb requests        {client.requests}",
+             f"letterboxd requests  {data['letterboxd_requests']}"]
+    lines += [f"  {k:<32}{v}" for k, v in sorted(progress.counts.items())]
+    lines.append(f"remaining (pending or needs_page) {data['remaining']}")
+    _emit(args, data, lines)
+    return 0
+
+
+def _cmd_coverage(args: argparse.Namespace, config: Config) -> int:
+    conn = _open_db(args, config)
+    counts = db.identity_counts(conn)
+    rows = conn.execute(
+        "SELECT f.name, f.year, i.uri, i.status, i.reason, i.tmdb_type, i.tmdb_id FROM identity i"
+        " JOIN film f ON f.uri = i.uri WHERE i.status != 'confirmed' ORDER BY i.status, i.reason, f.name"
+    ).fetchall()
+    data = {**counts, "films": [dict(r) for r in rows]}
+    lines = ["status"] + [f"  {k:<14}{v}" for k, v in sorted(counts["by_status"].items())]
+    lines += ["confirmed by method"] + [f"  {k:<14}{v}" for k, v in counts["confirmed_by_method"].items()]
+    lines += ["confirmed by type"] + [f"  {k:<14}{v}" for k, v in sorted(counts["confirmed_by_type"].items())]
+    lines += ["not confirmed, by reason"] + [f"  {k:<32}{v}" for k, v in counts["by_reason"].items()]
+    shown = rows if args.all else rows[:30]
+    for r in shown:
+        candidate = f"{r['tmdb_type'] or '?'}/{r['tmdb_id']}" if r["tmdb_id"] else "-"
+        lines.append(f"  {r['status']:<11}{(r['reason'] or ''):<20}{r['name']} ({r['year']}) {r['uri']} {candidate}")
+    if len(rows) > len(shown):
+        lines.append(f"  ... {len(rows) - len(shown)} more (--all)")
+    _emit(args, data, lines)
+    return 0
+
+
+_DB_COMMANDS = {
+    "import": _cmd_import, "seed": _cmd_seed, "resolve": _cmd_resolve,
+    "coverage": _cmd_coverage,
+}
 
 
 def _print_text(s: dict) -> None:
@@ -126,6 +201,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command in _DB_COMMANDS:
             return _DB_COMMANDS[args.command](args, config)
         summary = summarize(build_library(read_export(args.export), config))
+    except resolver.Blocked as error:
+        print(f"boxd-match: stopped: {error}. Progress is saved; resume later with the same"
+              " command. No workaround is attempted.", file=sys.stderr)
+        return 3
+    except resolver.ResolveError as error:
+        print(f"boxd-match: error: {error}. Progress is saved; run the same command to resume.",
+              file=sys.stderr)
+        return 2
     except (ConfigError, ExportError, db.SchemaError) as error:
         print(f"boxd-match: error: {error}", file=sys.stderr)
         return 2

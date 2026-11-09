@@ -180,10 +180,12 @@ def test_cli_reports_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
     assert "watched.csv" in capsys.readouterr().err
 
 
-def test_package_imports_no_network_module() -> None:
+def test_only_net_module_imports_network_modules() -> None:
     forbidden = {"socket", "http", "urllib", "requests", "httpx", "ssl"}
     package = Path(__file__).parents[1] / "src" / "boxd_match"
     for source in package.glob("*.py"):
+        if source.name == "net.py":
+            continue
         for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
             names = []
             if isinstance(node, ast.Import):
